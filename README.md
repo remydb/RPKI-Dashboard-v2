@@ -6,10 +6,10 @@ After creating the original RPKI dashboard for my master's thesis I thought it w
 Lately I've had a growing interest in the reasonably new "Go" language and things like NoSQL databases, javascript and object stores.
 After some research and testing I decided to build version 2 of the RPKI dashboard in the following way:
 
--All backend processing is done using code written in Golang
--All data is stored in MongoDB
--The data for the frontend will be delivered by a daemon offering a REST API
--The frontend will (probably) be built using AngularJS
+- All backend processing is done using code written in Golang
+- All data is stored in MongoDB
+- The data for the frontend will be delivered by a daemon offering a REST API
+- The frontend will (probably) be built using AngularJS
 
 
 ### Golang
