@@ -3,8 +3,9 @@ package main
 import (
 	"bufio"
 	"compress/gzip"
+	"encoding/csv"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -269,7 +270,7 @@ func validateRoutes() (err error) {
 				routes[x].VRP += roas[i].Id.String() + ","
 				query_param := bson.M{"_id": routes[x].Id}
 				change := bson.M{"$set": bson.M{"validity": routes[x].Validity, "vrp": routes[x].VRP}}
-				err = rconn_routes.Update(query_param, change)
+				_, err = rconn_routes.UpdateAll(query_param, change)
 				if err != nil {
 					log.Fatalf("Failed to update route validity status in MongoDB: %s", err)
 				}
@@ -294,23 +295,17 @@ func getUrl(url string) (lines []string, err error) {
 		log.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var body []byte
+	var body io.Reader
 	if strings.HasSuffix(url, ".gz") {
-		gzbody, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			log.Fatalf("Failed to read response: %s", err)
-		}
-		body, err = ioutil.ReadAll(gzbody)
+		body, err = gzip.NewReader(resp.Body)
 		if err != nil {
 			log.Fatalf("Failed to read response: %s", err)
 		}
 	} else {
-		body, err = ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatalf("Failed to read response: %s", err)
-		}
+		body = resp.Body
 	}
-	scanner := bufio.NewScanner(strings.NewReader(string(body)))
+
+	scanner := bufio.NewScanner(body)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -323,39 +318,112 @@ func getUrl(url string) (lines []string, err error) {
 	return lines, err
 }
 
-// Started working on the insert rirs function
-// but got bored, will finish this another time
-//
-// func insertRirs(geturlv string, ipver int8) err error {
-// 	lines, err := getUrl(geturlv4)
-// 	if err != nil {
-// 		log.Fatal("Download failed: %s", err)
-// 	}
+func getCsv(url string) (lines [][]string, err error) {
+	fmt.Println("Starting file download:", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := csv.NewReader(resp.Body)
+	lines, err = reader.ReadAll()
+	if err != nil {
+		log.Fatalf("Failed to read csv file: %s", err)
+		return nil, err
+	}
+	return lines, nil
+}
 
-// 	var wg sync.WaitGroup
-// 	fmt.Println("Processing RIRs...")
-// 	for i := range lines {
-// 		throttle <- 1
-// 		wg.Add(1)
-// 		fmt.Printf("\rStart processing line %d", i)
-// 		go func(i int) {
-// 			defer wg.Done()
-// 			if match, _ := regexp.Match(lines[i], "^[0-9a-f]{4}[:0-9a-f]*/[0-9]{1,3},"); match == true {
-// 				//Do stuff
-// 				parts := strings.Split(lines[i], ",")
+func insertRirs(geturlv4 string, geturlv6 string) (err error) {
+	lines, err := getCsv(geturlv4)
+	if err != nil {
+		log.Fatal("Download failed: %s", err)
+	}
 
-// 			}
-// 			<-throttle
-// 		}(i)
-// 	}
-// 	wg.Wait()
-// 	err = c.EnsureIndexKey("binary", "prefix")
-// 	if err != nil {
-// 		log.Fatalf("Failed to set indexes: %s", err)
-// 	}
-// 	fmt.Printf("\nFinished processing VRP\n")
-// 	return nil
-// }
+	colname_routes := fmt.Sprintf("%s-routes", cname)
+
+	var wg sync.WaitGroup
+
+	fmt.Println("Adding RIRs for IPv4 routes...")
+	for i := range lines {
+		throttle <- 1
+		wg.Add(1)
+		fmt.Printf("\rStart processing line %d", i)
+		//fmt.Printf("Prefix: %s\tWhois: %s\n", lines[i][0], lines[i][3])
+		go func(i int) {
+			defer wg.Done()
+			if match, _ := regexp.MatchString("^[0-9]{3}/[0-9]{1,2}", lines[i][0]); match == true {
+				if match, _ = regexp.MatchString("whois.[a-z]*.[a-z]*", lines[i][3]); match != true {
+					<-throttle
+					return
+				}
+				rir := strings.Split(lines[i][3], ".")
+				lenpart := strings.Split(lines[i][0], "/")
+				prefix, err := strconv.Atoi(lenpart[0])
+				if err != nil {
+					log.Fatalf("Failed to convert str to int: %s", err)
+				}
+				rconn := mconn.Clone()
+				defer rconn.Close()
+				rconn_routes := rconn.DB("rpki_dash").C(colname_routes)
+				search := fmt.Sprintf("^%d", prefix)
+				regex := bson.RegEx{search, ""}
+				query_param := bson.M{"ipver": 4, "prefix": regex}
+				change := bson.M{"$set": bson.M{"rir": rir[1]}}
+				_, err = rconn_routes.UpdateAll(query_param, change)
+				if err != nil {
+					log.Fatalf("Failed to update rir in MongoDB: %s", err)
+				}
+			}
+			<-throttle
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("\nFinished processing RIRs for IPv4\n")
+
+	lines, err = getCsv(geturlv6)
+	if err != nil {
+		log.Fatal("Download failed: %s", err)
+	}
+
+	fmt.Println("Adding RIRs for IPv6 routes...")
+	for i := range lines {
+		throttle <- 1
+		wg.Add(1)
+		fmt.Printf("\rStart processing line %d", i)
+		go func(i int) {
+			defer wg.Done()
+			if match, _ := regexp.MatchString("^[0-9a-f]{4}[:0-9a-f]*/[0-9]{1,3}", lines[i][0]); match == true {
+				if match, _ = regexp.MatchString("whois.[a-z]*.[a-z]*", lines[i][3]); match != true {
+					<-throttle
+					return
+				}
+				rir := strings.Split(lines[i][3], ".")
+				lenpart := strings.Split(lines[i][0], "/")
+				length, err := strconv.Atoi(lenpart[1])
+				if err != nil {
+					log.Fatalf("Failed to convert str to int: %s", err)
+				}
+				binary, _ := ipToBinShort(lenpart[0], length)
+				rconn := mconn.Clone()
+				defer rconn.Close()
+				rconn_routes := rconn.DB("rpki_dash").C(colname_routes)
+				binsearch := fmt.Sprintf("^%s", binary)
+				regex := bson.RegEx{binsearch, ""}
+				query_param := bson.M{"ipver": 6, "binary": regex}
+				change := bson.M{"$set": bson.M{"rir": rir[1]}}
+				_, err = rconn_routes.UpdateAll(query_param, change)
+				if err != nil {
+					log.Fatalf("Failed to update rir in MongoDB: %s", err)
+				}
+			}
+			<-throttle
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("\nFinished processing RIRs for IPv6\n")
+	return nil
+}
 
 func main() {
 	setEnv()
@@ -368,10 +436,10 @@ func main() {
 	defer mconn.Close()
 
 	//Mainly for testing purposes, delete all collections on start
-	vrpcollection := fmt.Sprintf("%s-vrp", cname)
-	routecollection := fmt.Sprintf("%s-routes", cname)
-	mconn.DB("rpki_dash").C(vrpcollection).DropCollection()
-	mconn.DB("rpki_dash").C(routecollection).DropCollection()
+	// vrpcollection := fmt.Sprintf("%s-vrp", cname)
+	// routecollection := fmt.Sprintf("%s-routes", cname)
+	// mconn.DB("rpki_dash").C(vrpcollection).DropCollection()
+	// mconn.DB("rpki_dash").C(routecollection).DropCollection()
 
 	err = parseRoaList("http://rpki.surfnet.nl:8080/export.csv")
 	if err != nil {
@@ -389,11 +457,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to validate routes: %s", err)
 	}
-	// err = insertRirs("http://www.iana.org/assignments/ipv4-address-space/ipv4-address-space.csv",
-	// 				"http://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.csv")
-	// if err != nil {
-	// 	log.Fatalf("Failed to insert rirs: %s", err)
-	// }
+	err = insertRirs("http://www.iana.org/assignments/ipv4-address-space/ipv4-address-space.csv",
+		"http://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.csv")
+	if err != nil {
+		log.Fatalf("Failed to insert rirs: %s", err)
+	}
 	now = time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("Finished at: %s\n", now)
 }

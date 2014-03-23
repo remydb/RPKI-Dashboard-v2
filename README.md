@@ -28,4 +28,4 @@ The frontend for version 1 of the RPKI dashboard was written in PHP and featured
 
 ## Progress
 
-So far the backend is almost fully completed, the only part missing at the time of writing is the insertion of RIRs for each route. I'm just working on this project in my spare time to get more experience in writing Golang code and to get some experience with creating fancier, more dynamic frontends. There's no real timeframe for when this is going to be finished, but I hope to have it all completely done (and hopefully replace the current dashboard running at http://rpki.surfnet.nl) by this summer.
+So far the backend is fully completed, only the frontend remains to be done. I'm just working on this project in my spare time to get more experience in writing Golang code and to get some experience with creating fancier, more dynamic frontends. There's no real timeframe for when this is going to be finished, but I hope to have it all completely done (and hopefully replace the current dashboard running at http://rpki.surfnet.nl) by this summer.
